@@ -2,6 +2,9 @@ library(dplyr)
 library(readr)
 library(haven)
 
+#---- OPTIONAL: Load the attribute() function if it exists in another script
+# source("path/to/attribute.R") # Uncomment and update the path if needed
+
 # Define outcomes and models
 outcome_list <- c("_0000_apop", "_0144_apop", "_4564_apop", "_6599_apop", "_black_bpop", "_white_wpop")
 model_list_basic <- c("m_linear", "m_cubic_adapt_pool24")
@@ -10,50 +13,78 @@ model_list_full <- c("m_linear", "m_nonlinear", "m_linear_leads", "m_linear_adap
                      "m_cubic_adapt_pool24", "m_cubic")
 
 #------------------ Run attribute() for all outcome-model combinations
-for (n in model_list_basic) {
-  for (z in outcome_list) {
-    attribute(Y = z, m = n, fixedpop = "4")
+if (exists("attribute")) {
+  for (n in model_list_basic) {
+    for (z in outcome_list) {
+      attribute(Y = z, m = n, fixedpop = "4")
+    }
   }
-}
 
-#------------------ Run attribute() for tdths_ttpop for all models
-for (n in model_list_full) {
-  attribute(Y = "tdths_ttpop", m = n, fixedpop = "4")
-}
+  #------------------ Run attribute() for tdths_ttpop for all models
+  for (n in model_list_full) {
+    attribute(Y = "tdths_ttpop", m = n, fixedpop = "4")
+  }
 
-#------------------ Run attribute() for quartiles of m_cubic_adapt_pool24
-for (j in 1:4) {
-  attribute(Y = "tdths_ttpop", m = "m_cubic_adapt_pool24", fixedpop = as.character(j))
+  #------------------ Run attribute() for quartiles of m_cubic_adapt_pool24
+  for (j in 1:4) {
+    attribute(Y = "tdths_ttpop", m = "m_cubic_adapt_pool24", fixedpop = as.character(j))
+  }
+} else {
+  warning("Function 'attribute' not found. Skipping attribute() calls.")
 }
 
 #------------------ Combine storm-state-month data
 files <- list.files("output", pattern = "^mortality_predict_m_cubic_adapt_pool24_tdths_ttpop_\\d+\\.dta$", full.names = TRUE)
-mortality_data <- lapply(files, read_dta) %>% bind_rows()
-write_dta(mortality_data, "output/mortality_predict_m_cubic_adapt_pool24_tdths_ttpop.dta")
+if (length(files) > 0) {
+  mortality_data <- lapply(files, read_dta) %>% bind_rows()
+  write_dta(mortality_data, "output/mortality_predict_m_cubic_adapt_pool24_tdths_ttpop.dta")
+} else {
+  warning("No DTA files found matching the storm-state-month pattern.")
+}
 
 #------------------ Collapse and merge prediction data (by date and by state)
 outcome_list <- c("tdths_ttpop", "_0000_apop", "_0144_apop", "_4564_apop", "_6599_apop", "_black_bpop", "_white_wpop")
 
 for (Y in outcome_list) {
-
   model_list <- if (Y == "tdths_ttpop") model_list_full else model_list_basic
   mortmodel <- character(0)
 
   # Collapse each model's date-level prediction
   for (m in model_list) {
-    df <- read_dta(paste0("output/mort_TC_date_total_", m, "_", Y, ".dta"))
+    file_path <- paste0("output/mort_TC_date_total_", m, "_", Y, ".dta")
+    if (!file.exists(file_path)) {
+      warning(paste("File not found:", file_path))
+      next
+    }
+
+    df <- read_dta(file_path)
     collapsed <- df %>%
       group_by(modate) %>%
-      summarise(mort = sum(mort, na.rm = TRUE),
-                mort_sd = sd(mort, na.rm = TRUE),
-                mort_n = n())
-    write_dta(collapsed, paste0("output/mort_TC_date_total_", m, "_", Y, ".dta"))
+      summarise(
+        mort = sum(mort, na.rm = TRUE),
+        mort_sd = sd(mort, na.rm = TRUE),
+        mort_n = n()
+      )
+    write_dta(collapsed, file_path)
   }
 
   # Merge all models into one date-level dataset
-  df_main <- read_dta(paste0("output/mort_TC_date_total_m_linear_", Y, ".dta"))
+  df_main_path <- paste0("output/mort_TC_date_total_m_linear_", Y, ".dta")
+  if (!file.exists(df_main_path)) {
+    warning(paste("Missing base file for merging:", df_main_path))
+    next
+  }
+
+  df_main <- read_dta(df_main_path)
+
   for (m in model_list) {
-    df_temp <- read_dta(paste0("output/mort_TC_date_total_", m, "_", Y, ".dta")) %>%
+    file_path <- paste0("output/mort_TC_date_total_", m, "_", Y, ".dta")
+    if (!file.exists(file_path)) {
+      warning(paste("Missing model file:", file_path))
+      next
+    }
+
+    df_temp <- read_dta(file_path) %>%
       rename(!!paste0("mort_", m) := mort)
     df_main <- left_join(df_main, df_temp, by = "modate")
     mortmodel <- c(mortmodel, paste0("mort_", m))
@@ -65,7 +96,7 @@ for (Y in outcome_list) {
   full_data <- read_dta("output/full_data_for_regression.dta") %>%
     filter(year >= 1930) %>%
     group_by(year, month) %>%
-    summarise(dths_tot = sum(dths_tot, na.rm = TRUE)) %>%
+    summarise(dths_tot = sum(dths_tot, na.rm = TRUE), .groups = "drop") %>%
     mutate(modate = (year - 1900) * 12 + month)
 
   merged <- left_join(full_data, df_main, by = "modate") %>%
@@ -89,10 +120,16 @@ for (Y in outcome_list) {
   # Total observed deaths by state
   full_data_state <- read_dta("output/full_data_for_regression.dta") %>%
     group_by(adm_name) %>%
-    summarise(dths_tot = sum(dths_tot, na.rm = TRUE))
+    summarise(dths_tot = sum(dths_tot, na.rm = TRUE), .groups = "drop")
 
   for (m in model_list) {
-    state_model <- read_dta(paste0("output/mort_TC_state_total_", m, "_", Y, ".dta")) %>%
+    state_path <- paste0("output/mort_TC_state_total_", m, "_", Y, ".dta")
+    if (!file.exists(state_path)) {
+      warning(paste("Missing state model file:", state_path))
+      next
+    }
+
+    state_model <- read_dta(state_path) %>%
       rename(!!paste0("mort_", m) := mort)
     full_data_state <- left_join(full_data_state, state_model, by = "adm_name")
   }
@@ -105,4 +142,3 @@ for (Y in outcome_list) {
 
   write_dta(full_data_state, paste0("output/mort_TC_state_allmodels_", Y, ".dta"))
 }
-
