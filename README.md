@@ -1,2 +1,1 @@
-# Mortality caused by tropical cyclones in the
-United States
+# Mortality caused by tropical cyclones in the United States
